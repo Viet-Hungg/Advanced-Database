@@ -24,24 +24,89 @@ async function getConnection() {
 
 // GET /api/media
 app.get('/api/media', async (req, res) => {
+  const userId = req.query.userId || null;
   try {
     const conn = await getConnection();
 
-    const [rows] = await conn.execute(`
+    const [mediaRows] = await conn.execute(`
       SELECT 
         m.media_ID,
         m.title,
         m.description,
         m.release_date,
         m.type,
+        mv.duration,
+        mv.box_office,
+        s.total_seasons,
+        ROUND(AVG(r.score), 1) AS rating,
         CONCAT('https://picsum.photos/seed/', m.media_ID, '/500/750') AS poster,
         CONCAT('https://picsum.photos/seed/', m.media_ID, '/1280/720') AS backdrop
       FROM Media m
+      LEFT JOIN Movie mv ON mv.media_ID = m.media_ID
+      LEFT JOIN Series s ON s.media_ID = m.media_ID
+      LEFT JOIN Rating r ON r.media_ID = m.media_ID
+      GROUP BY m.media_ID
       ORDER BY m.release_date DESC;
     `);
 
+    const [genreRows] = await conn.execute(`
+      SELECT mg.media_ID, mg.genre_ID, g.genre_name 
+      FROM Media_Genre mg
+      JOIN Genre g ON g.genre_ID = mg.genre_ID;
+    `);
+
+    const [actorRows] = await conn.execute(`
+      SELECT ma.media_ID, a.actor_ID, CONCAT(a.first_name, ' ', a.last_name) AS name
+      FROM Media_Actor ma
+      JOIN Actor a ON a.actor_ID = ma.actor_ID;
+    `);
+
+    const [directorRows] = await conn.execute(`
+      SELECT md.media_ID, d.director_ID, CONCAT(d.first_name, ' ', d.last_name) AS name
+      FROM Media_Director md
+      JOIN Director d ON d.director_ID = md.director_ID;
+    `);
+
+    let watchlistSet = new Set();
+    if (userId) {
+      const [watchRows] = await conn.execute(`SELECT media_ID FROM WatchList WHERE user_ID = ?`, [userId]);
+      watchRows.forEach(row => watchlistSet.add(row.media_ID));
+    }
+
     await conn.end();
-    res.json(rows);
+
+    const genresByMedia = genreRows.reduce((acc, row) => {
+      if (!acc[row.media_ID]) acc[row.media_ID] = [];
+      acc[row.media_ID].push({ id: row.genre_ID, name: row.genre_name });
+      return acc;
+    }, {});
+
+    const actorsByMedia = actorRows.reduce((acc, row) => {
+      if (!acc[row.media_ID]) acc[row.media_ID] = [];
+      acc[row.media_ID].push({ id: row.actor_ID, name: row.name });
+      return acc;
+    }, {});
+
+    const directorsByMedia = directorRows.reduce((acc, row) => {
+      if (!acc[row.media_ID]) acc[row.media_ID] = [];
+      acc[row.media_ID].push({ id: row.director_ID, name: row.name });
+      return acc;
+    }, {});
+
+    const result = mediaRows.map(m => ({
+      ...m,
+      rating: m.rating ? Number(m.rating) : null,
+      genre_ids: (genresByMedia[m.media_ID] || []).map(g => g.id),
+      genres: (genresByMedia[m.media_ID] || []).map(g => g.name),
+      actor_ids: (actorsByMedia[m.media_ID] || []).map(a => a.id),
+      actors: (actorsByMedia[m.media_ID] || []).map(a => a.name),
+      director_ids: (directorsByMedia[m.media_ID] || []).map(d => d.id),
+      directors: (directorsByMedia[m.media_ID] || []).map(d => d.name),
+      quality: m.type === 'Movie' ? 'HD' : 'Full HD',
+      in_watchlist: watchlistSet.has(m.media_ID)
+    }));
+
+    res.json(result);
 
   } catch (err) {
     console.error(err);
@@ -103,6 +168,7 @@ app.post('/api/login', async (req, res) => {
 // ==========================
 // ADMIN: ADD USER
 // ==========================
+app.post('/api/users/add', async (req, res) => {
   const { username, email, password, role } = req.body;
 
   try {
@@ -119,7 +185,7 @@ app.post('/api/login', async (req, res) => {
     console.error(err);
     res.json({ success: false, message: err.message });
   }
-;
+});
 
 
 // ==========================
@@ -255,7 +321,7 @@ app.get('/api/comments/:movieId', async (req, res) => {
     await conn.end();
     res.json(rows);
 
-  } catch (err) {db
+  } catch (err) {
     console.error(err);
     res.json([]);
   }
